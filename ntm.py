@@ -83,24 +83,6 @@ class NTMCell(gluon.HybridBlock):
         oup = F.softmax(F.concat(*(oup, read), axis=1))
         return oup, memory, (wr, ww, read, state)
 
-        
-if __name__ == '__main__':
-    batch, N, M = 2, 10, 100
-    memory = mx.nd.normal(shape=(N, M))
-    x = mx.nd.normal(shape=(batch, 400))
-    w = mx.nd.normal(shape=(batch, N))
-
-    read = ReadCell([M, 1, 1, 3, 1])
-    read.initialize()
-    #read.hybridize()
-    result, w_r = read(x, memory, w)
-    print(result.shape, w_r.shape)
-
-    write = WriteCell([M, 1, 1, 3, 1, M, M])
-    write.initialize()
-    #read.hybridize()
-    m, w_w = write(x, memory, w)
-    print(m.shape, w_w.shape)
 
 
 
