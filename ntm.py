@@ -4,9 +4,10 @@ from mxnet.gluon import nn
 
 
 class HeadCell(gluon.HybridBlock):
-    def __init__(self, head_output_lengths):
+    def __init__(self, head_output_lengths, memroy_length):
         super(HeadCell, self).__init__()
         self.head_output_lengths = head_output_lengths
+        self.memroy_length = memroy_length
         self.fc = nn.Dense(sum(head_output_lengths))
     
     def _slice(self, F, output):
@@ -18,15 +19,18 @@ class HeadCell(gluon.HybridBlock):
         return result
 
     def _circular_convolution(self, F, wgs, ss):
-        ws = []
-        for (wg, s) in zip(wgs, ss):
-            wg_l, s_l = len(wg), len(s)
-            shift_l = int(s_l//2)
-            w_i = 0
-            for offset, s_i in zip(range(-shift_l, shift_l, 1), s):
-                w_i += F.take(wg, (F.arange(wg_l)+offset)%wg_l) * s_i
-            ws.append(w_i)
-        return F.stack(*ws)
+        wl, sl = self.memroy_length, self.head_output_lengths[3]
+        data = F.concat(wgs, ss, dim=1) 
+        def func(data, status): 
+            wg = F.slice_axis(data, axis=0, begin=0, end=wl) 
+            s = F.slice_axis(data, axis=0, begin=wl, end=wl+sl) 
+            shift_l, w_i = int(sl//2), 0 
+            for offset, s_i  in zip(range(-shift_l, shift_l, 1), s): 
+                w_i += F.take(wg, (F.arange(wl) + offset) % wl) * s_i 
+            return w_i, status 
+        ws, _ = F.contrib.foreach(func, data,  []) 
+        return ws 
+
 
     def _content_addressing(self, F, key, b, memory):
         key = F.expand_dims(key, axis=1)
