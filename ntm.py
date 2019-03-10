@@ -20,31 +20,35 @@ class HeadCell(gluon.HybridBlock):
 
     def _circular_convolution(self, F, wgs, ss):
         wl, sl = self.memroy_length, self.head_output_lengths[3]
+        asl = int(sl//2)
         data = F.concat(wgs, ss, dim=1) 
         def func(data, status): 
             wg = F.slice_axis(data, axis=0, begin=0, end=wl) 
             s = F.slice_axis(data, axis=0, begin=wl, end=wl+sl) 
-            shift_l, w_i = int(sl//2), 0 
-            for offset, s_i  in zip(range(-shift_l, shift_l, 1), s): 
-                w_i += F.take(wg, (F.arange(wl) + offset) % wl) * s_i 
-            return w_i, status 
+            indices = F.expand_dims(F.arange(wl), axis=0)
+            indices = F.repeat(indices, axis=0, repeats=sl)
+            offset = F.reshape(F.arange(-asl, asl+1), shape=(sl, 1))
+            indices = F.broadcast_add(indices, offset) % wl
+            w = F.broadcast_mul(F.take(wg, indices), F.reshape(s, (sl, 1)))
+            w = F.sum(w, axis=0)
+            return w, status 
         ws, _ = F.contrib.foreach(func, data,  []) 
         return ws 
 
 
     def _content_addressing(self, F, key, b, memory):
-        key = F.expand_dims(key, axis=1)
-        inner = F.sum(key * memory, axis=-1)
+        inner = F.dot(key, F.transpose(memory))
         kp = F.sqrt(F.sum(key**2, axis=-1))
-        mp = F.sqrt(F.sum(memory**2, axis=-1))
-        cosine = inner / (kp * mp)
-        return F.softmax(b * cosine)
+        mp = F.sqrt(F.sum(memory**2))
+        product = F.expand_dims(F.broadcast_mul(kp, mp), axis=-1)
+        cosine = F.broadcast_div(inner, product)
+        return F.softmax(F.broadcast_mul(b, cosine))
     
     def _addressing(self, F, key, b, g, s, r, memory, prev_w):
         wc = self._content_addressing(F, key, b, memory)
-        wg = g * wc + (1 - g) * prev_w
+        wg = F.broadcast_mul(g, wc) + F.broadcast_mul((1 - g), prev_w)
         ws = self._circular_convolution(F, wg, s)
-        w = F.softmax(ws**r)
+        w = F.softmax(F.broadcast_power(ws, r))
         return w
 
     
@@ -64,11 +68,20 @@ class WriteCell(HeadCell):
         b, g = F.log(1 + F.exp(b)), F.sigmoid(g)
         s, r = F.softmax(s), 1 + F.log(1 + F.exp(r))
         w = self._addressing(F, key, b, g, s, r, memory, prev_w)
-        w_t = F.expand_dims(w, axis=-1)
-        e, a = F.expand_dims(e, axis=1), F.expand_dims(a, axis=1)
-        erase = F.stack(*[F.dot(i, j) for (i, j) in zip(w_t, e)])
-        add = F.stack(*[F.dot(i, j) for (i, j) in zip(w_t, a)])
-        memory = memory * (1 - erase) + add
+
+        n, m = self.memroy_length, self.head_output_lengths[0]
+        we, wa = F.concat(w, e, dim=1), F.concat(w, a, dim=1)
+        def func(data, state):
+            w = F.slice_axis(data, axis=0, begin=0, end=n)
+            s = F.slice_axis(data, axis=0, begin=n, end=n+m)
+            w = F.expand_dims(w, axis=1)
+            s = F.expand_dims(s, axis=0)
+            ws = F.dot(w, s)
+            return ws, state
+        erase, _ = F.contrib.foreach(func, we, [])
+        add,   _ = F.contrib.foreach(func, wa, [])
+        memory = F.broadcast_mul(memory, (1-erase))
+        memory = F.broadcast_add(memory, add)
         return F.sum(memory, axis=0), w
 
 
@@ -103,7 +116,7 @@ class NTM(object):
             None
         )
 
-        controller = gluon.rnn.GRU(chs)
+        controller = gluon.rnn.GRUCell(chs)
         read = ReadCell([M, 1, 1, 3, 1], N)
         write = WriteCell([M, 1, 1, 3, 1, M, M], N)
 
@@ -122,6 +135,26 @@ class NTM(object):
 
 
 
+if __name__ == '__main__':
+    from mxnet import nd
 
+    n, m, b = 100, 125, 3
 
+    i = nd.normal(shape=(b, m))
+    w = nd.normal(shape=(b, n))
+    memory = nd.normal(shape=(n, m))
+
+    read = ReadCell([m, 1, 1, 3, 1], n)
+    read.initialize()
+    read.hybridize()
+
+    write = WriteCell([m, 1, 1, 3, 1, m, m], n)
+    write.initialize()
+    write.hybridize()
+
+    r, w = read(i, memory, w)
+    print(r.shape, w.shape)
+
+    memory, w = write(i, memory, w)
+    print(memory.shape, w.shape)
         
