@@ -88,6 +88,39 @@ class NTMCell(gluon.HybridBlock):
         return oup, memory, (wr, ww, read, state)
 
 
+class NTM(object):
+    def __init__(self, N, M, chs, bs):
+        self.N = N
+        self.M = M
+        self.chs = chs
+        self.bs = bs
+
+        self.memory = mx.nd.zeros((N, M))
+        self.prev = (
+            mx.nd.zeros((bs, N)), 
+            mx.nd.zeros((bs, N)), 
+            mx.nd.zeros((bs, M)), 
+            None
+        )
+
+        controller = gluon.rnn.GRU(chs)
+        read = ReadCell([M, 1, 1, 3, 1], N)
+        write = WriteCell([M, 1, 1, 3, 1, M, M], N)
+
+        self.cell = NTMCell(controller, read, write)
+    
+
+    def hybridize(self):
+        return self.cell.hybridize()
+    
+
+    def __call__(self, x):
+        oup, memory, status = self.cell(x, self.memory, self.prev)
+        self.memory = memory
+        self.prev = status
+        return oup
+
+
 
 
 
