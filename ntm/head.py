@@ -78,83 +78,10 @@ class WriteCell(HeadCell):
             s = F.expand_dims(s, axis=0)
             ws = F.dot(w, s)
             return ws, state
+        
         erase, _ = F.contrib.foreach(func, we, [])
         add,   _ = F.contrib.foreach(func, wa, [])
+        
         memory = F.broadcast_mul(memory, (1-erase))
         memory = F.broadcast_add(memory, add)
         return F.sum(memory, axis=0), w
-
-
-class NTMCell(gluon.HybridBlock):
-    def __init__(self, controller, read, write):
-        self._controller = controller
-        self._read = read
-        self._write = write
-    
-    def hybrid_forward(self, F, x, memory, prev):
-        prev_wr, prev_ww, prev_read, prev_state = prev
-        inp = F.concat(*(x, prev_read), axis=1)
-        oup, state = self._controller(inp, prev_state)
-        read, wr = self._read(x, memory, prev_wr)
-        memory, ww = self._write(x, memory, prev_ww)
-        oup = F.softmax(F.concat(*(oup, read), axis=1))
-        return oup, memory, (wr, ww, read, state)
-
-
-class NTM(object):
-    def __init__(self, N, M, chs, bs):
-        self.N = N
-        self.M = M
-        self.chs = chs
-        self.bs = bs
-
-        self.memory = mx.nd.zeros((N, M))
-        self.prev = (
-            mx.nd.zeros((bs, N)), 
-            mx.nd.zeros((bs, N)), 
-            mx.nd.zeros((bs, M)), 
-            None
-        )
-
-        controller = gluon.rnn.GRUCell(chs)
-        read = ReadCell([M, 1, 1, 3, 1], N)
-        write = WriteCell([M, 1, 1, 3, 1, M, M], N)
-
-        self.cell = NTMCell(controller, read, write)
-    
-
-    def hybridize(self):
-        return self.cell.hybridize()
-    
-
-    def __call__(self, x):
-        oup, memory, status = self.cell(x, self.memory, self.prev)
-        self.memory = memory
-        self.prev = status
-        return oup
-
-
-
-if __name__ == '__main__':
-    from mxnet import nd
-
-    n, m, b = 100, 125, 3
-
-    i = nd.normal(shape=(b, m))
-    w = nd.normal(shape=(b, n))
-    memory = nd.normal(shape=(n, m))
-
-    read = ReadCell([m, 1, 1, 3, 1], n)
-    read.initialize()
-    read.hybridize()
-
-    write = WriteCell([m, 1, 1, 3, 1, m, m], n)
-    write.initialize()
-    write.hybridize()
-
-    r, w = read(i, memory, w)
-    print(r.shape, w.shape)
-
-    memory, w = write(i, memory, w)
-    print(memory.shape, w.shape)
-        
